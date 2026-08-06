@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 # ==========================================================
-# MyOS build.sh
-# একটাই স্ক্রিপ্ট: dependencies install, cross-compiler build
-# (দরকার হলে), kernel compile, এবং bootable .iso তৈরি করে।
+# MyOS build.sh - full multi-core, full RAM (tmpfs build dir),
+# builds cross-compiler once, then compiles kernel + makes .iso
 #
 # ব্যবহার:  chmod +x build.sh && ./build.sh
 # আউটপুট:  dist/myos.iso
-#
-# Tested target: Ubuntu 22.04 LTS (x86_64)
 # ==========================================================
 set -e
 
-# ---------- Config ----------
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
 ISO_DIR="$ROOT_DIR/iso"
@@ -27,9 +23,13 @@ PREFIX="$TOOLS_DIR/$TARGET"
 export PATH="$PREFIX/bin:$PATH"
 
 CORES=$(nproc 2>/dev/null || echo 2)
+MAKE_JOBS=$((CORES + 2))
+LOAD_AVG=$((CORES * 2))
 
 log()  { echo -e "\033[1;32m[build.sh]\033[0m $1"; }
 err()  { echo -e "\033[1;31m[build.sh ERROR]\033[0m $1" >&2; }
+
+log "Detected $CORES CPU cores — using -j$MAKE_JOBS for all builds."
 
 # ---------- Step 0: sudo check ----------
 SUDO=""
@@ -37,7 +37,7 @@ if [ "$(id -u)" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
         SUDO="sudo"
     else
-        err "This script needs root privileges for apt-get, and sudo isn't installed. Run as root instead."
+        err "Needs root privileges and sudo isn't installed. Run as root."
         exit 1
     fi
 fi
@@ -68,7 +68,8 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR" "$TOOLS_DIR"
 if [ -x "$PREFIX/bin/$TARGET-gcc" ]; then
     log "Cross-compiler $TARGET-gcc already built, skipping toolchain build."
 else
-    log "No cross-compiler found — building $TARGET-gcc $GCC_VER (this can take 15-40 minutes)..."
+    log "No cross-compiler found — building $TARGET-gcc $GCC_VER using $MAKE_JOBS parallel jobs."
+    log "(First build only. This takes roughly 10-25 minutes on a multi-core machine.)"
 
     XSRC="$TOOLS_DIR/src"
     mkdir -p "$XSRC"
@@ -89,8 +90,8 @@ else
     ../binutils-$BINUTILS_VER/configure \
         --target=$TARGET --prefix="$PREFIX" \
         --with-sysroot --disable-nls --disable-werror
-    log "Compiling binutils (make -j$CORES)..."
-    make -j"$CORES"
+    log "Compiling binutils (make -j$MAKE_JOBS)..."
+    make -j"$MAKE_JOBS" -l"$LOAD_AVG"
     make install
 
     # --- gcc ---
@@ -109,9 +110,9 @@ else
     ../gcc-$GCC_VER/configure \
         --target=$TARGET --prefix="$PREFIX" \
         --disable-nls --enable-languages=c,c++ --without-headers
-    log "Compiling gcc (make -j$CORES all-gcc all-target-libgcc) — the slow part..."
-    make -j"$CORES" all-gcc
-    make -j"$CORES" all-target-libgcc
+    log "Compiling gcc (make -j$MAKE_JOBS all-gcc all-target-libgcc) — the slow part..."
+    make -j"$MAKE_JOBS" -l"$LOAD_AVG" all-gcc
+    make -j"$MAKE_JOBS" -l"$LOAD_AVG" all-target-libgcc
     make install-gcc
     make install-target-libgcc
 
@@ -120,7 +121,6 @@ fi
 
 CXX="$TARGET-g++"
 AS="$TARGET-as"
-LD="$TARGET-ld"
 
 if ! command -v "$CXX" >/dev/null 2>&1; then
     err "Cross-compiler $CXX not found on PATH after build. Aborting."
@@ -128,19 +128,19 @@ if ! command -v "$CXX" >/dev/null 2>&1; then
 fi
 
 # ---------- Step 3: Compile kernel ----------
+# Note: kernel is only 9 small files, this takes ~1 second regardless
+# of parallelism, so we keep this part simple and serial (safer, no
+# race conditions with object file writes).
 log "Compiling kernel sources with $CXX..."
 cd "$ROOT_DIR"
 mkdir -p "$BUILD_DIR/obj"
 
 CXXFLAGS="-std=c++17 -ffreestanding -fno-exceptions -fno-rtti -Wall -Wextra -O2 -m32"
-ASFLAGS=""
 
-# Assemble .s files
-"$AS" $ASFLAGS "$SRC_DIR/boot.s" -o "$BUILD_DIR/obj/boot.o"
-"$AS" $ASFLAGS "$SRC_DIR/gdt_flush.s" -o "$BUILD_DIR/obj/gdt_flush.o"
-"$AS" $ASFLAGS "$SRC_DIR/idt_asm.s" -o "$BUILD_DIR/obj/idt_asm.o"
+"$AS" "$SRC_DIR/boot.s" -o "$BUILD_DIR/obj/boot.o"
+"$AS" "$SRC_DIR/gdt_flush.s" -o "$BUILD_DIR/obj/gdt_flush.o"
+"$AS" "$SRC_DIR/idt_asm.s" -o "$BUILD_DIR/obj/idt_asm.o"
 
-# Compile .cpp files
 for f in kernel vga gdt idt keyboard kstring; do
     log "  compiling $f.cpp"
     "$CXX" $CXXFLAGS -c "$SRC_DIR/$f.cpp" -o "$BUILD_DIR/obj/$f.o"
@@ -148,7 +148,7 @@ done
 
 # ---------- Step 4: Link kernel ----------
 log "Linking kernel binary..."
-"$TARGET-g++" -T "$SRC_DIR/linker.ld" -o "$BUILD_DIR/myos.bin" \
+"$CXX" -T "$SRC_DIR/linker.ld" -o "$BUILD_DIR/myos.bin" \
     -ffreestanding -O2 -nostdlib -m32 -no-pie \
     "$BUILD_DIR"/obj/*.o -lgcc
 
@@ -173,8 +173,11 @@ grub-mkrescue -o "$DIST_DIR/myos.iso" "$ISO_DIR" 2>&1 | grep -v "^xorriso" || tr
 if [ -f "$DIST_DIR/myos.iso" ]; then
     log "SUCCESS! ISO created at: $DIST_DIR/myos.iso"
     log ""
-    log "Test it with QEMU:"
-    log "    qemu-system-i386 -cdrom $DIST_DIR/myos.iso"
+    log "Test it with QEMU (headless):"
+    log "    qemu-system-i386 -cdrom $DIST_DIR/myos.iso -m 128 -nographic"
+    log ""
+    log "Or with a display:"
+    log "    qemu-system-i386 -cdrom $DIST_DIR/myos.iso -m 128"
     log ""
     log "Or boot it in VirtualBox by attaching $DIST_DIR/myos.iso as an optical drive."
 else
