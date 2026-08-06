@@ -1,4 +1,5 @@
 #include "vga.h"
+#include "serial.h"
 
 static const size_t VGA_WIDTH = 80;
 static const size_t VGA_HEIGHT = 25;
@@ -62,6 +63,8 @@ void Terminal::backspace() {
 }
 
 void Terminal::putChar(char c) {
+    serial_write_char(c);
+
     if (c == '\n') {
         col = 0;
         row++;

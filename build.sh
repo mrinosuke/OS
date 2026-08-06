@@ -141,7 +141,7 @@ CXXFLAGS="-std=c++17 -ffreestanding -fno-exceptions -fno-rtti -Wall -Wextra -O2 
 "$AS" "$SRC_DIR/gdt_flush.s" -o "$BUILD_DIR/obj/gdt_flush.o"
 "$AS" "$SRC_DIR/idt_asm.s" -o "$BUILD_DIR/obj/idt_asm.o"
 
-for f in kernel vga gdt idt keyboard kstring; do
+for f in kernel vga gdt idt keyboard kstring serial; do
     log "  compiling $f.cpp"
     "$CXX" $CXXFLAGS -c "$SRC_DIR/$f.cpp" -o "$BUILD_DIR/obj/$f.o"
 done
@@ -173,8 +173,9 @@ grub-mkrescue -o "$DIST_DIR/myos.iso" "$ISO_DIR" 2>&1 | grep -v "^xorriso" || tr
 if [ -f "$DIST_DIR/myos.iso" ]; then
     log "SUCCESS! ISO created at: $DIST_DIR/myos.iso"
     log ""
-    log "Test it with QEMU (headless):"
+    log "Test it headless (no GUI needed, works over SSH/Termux):"
     log "    qemu-system-i386 -cdrom $DIST_DIR/myos.iso -m 128 -nographic"
+    log "    (kernel output now mirrors to serial port automatically)"
     log ""
     log "Or with a display:"
     log "    qemu-system-i386 -cdrom $DIST_DIR/myos.iso -m 128"

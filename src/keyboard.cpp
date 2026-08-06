@@ -1,6 +1,7 @@
 #include "keyboard.h"
 #include "idt.h"
 #include "io.h"
+#include "serial.h"
 
 #define KBD_BUF_SIZE 256
 static char kbd_buffer[KBD_BUF_SIZE];
@@ -52,10 +53,14 @@ void keyboard_init() {
 }
 
 bool keyboard_poll(char* c) {
-    if (kbd_tail == kbd_head) return false;
-    *c = kbd_buffer[kbd_tail];
-    kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
-    return true;
+    if (kbd_tail != kbd_head) {
+        *c = kbd_buffer[kbd_tail];
+        kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
+        return true;
+    }
+    /* fall back to serial input (useful when no real PS/2 keyboard,
+       e.g. running headless with -nographic over a terminal) */
+    return serial_poll(c);
 }
 
 char keyboard_getchar() {

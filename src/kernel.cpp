@@ -3,6 +3,7 @@
 #include "idt.h"
 #include "keyboard.h"
 #include "kstring.h"
+#include "serial.h"
 #include <stdint.h>
 
 #define CMD_BUF_SIZE 256
@@ -93,6 +94,7 @@ static void shell_loop() {
 }
 
 extern "C" void kernel_main(uint32_t magic, uint32_t /*mb_info*/) {
+    serial_init();
     gdt_init();
     idt_init();
     keyboard_init();
